@@ -1,0 +1,38 @@
+name: Submit FlatBuffers PR
+
+on:
+  push:
+    branches:
+      - automation/flatbuffers-fork-attempt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_PAT || secrets.PAT || github.token }}
+    steps:
+      - name: Fork, patch, push, and open PR
+        run: |
+          set -euo pipefail
+          rm -rf flatbuffers
+          gh repo fork google/flatbuffers --clone --remote
+          cd flatbuffers
+          git checkout -b rust-vector-unsafe-doctests
+          curl -fsSL https://raw.githubusercontent.com/mhusnain8721/data-science/contribution/flatbuffers-vector-doctests/contributions/flatbuffers/flatbuffers-rust-unsafe-contract-doctests.patch -o /tmp/flatbuffers.patch
+          git apply --check /tmp/flatbuffers.patch
+          git apply /tmp/flatbuffers.patch
+          git config user.name "Muhammad Husnain"
+          git config user.email "101082076+mhusnain8721@users.noreply.github.com"
+          git add rust/flatbuffers/src/vector.rs
+          git commit -m "[Rust] Add paired doctests for vector unsafe-call contracts"
+          git push -u origin rust-vector-unsafe-doctests
+          gh pr create \
+            --repo google/flatbuffers \
+            --base master \
+            --head mhusnain8721:rust-vector-unsafe-doctests \
+            --title "[Rust] Add paired doctests for vector unsafe-call contracts" \
+            --body "Adds paired compile-fail and valid doctests for the existing unsafe contracts of Vector::new, follow_cast_ref, and VectorIter::from_slice. No runtime implementation, public signature, or dependency changes. The patch was independently validated on GitHub Actions with default and no-default-feature doctests; negative examples fail with E0133 and positive examples compile and execute. Validation: https://github.com/mhusnain8721/data-science/actions/runs/34373711135. AI assistance was used to help prepare and validate the change; I reviewed the scope and results before submission."
