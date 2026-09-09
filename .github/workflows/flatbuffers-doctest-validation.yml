@@ -1,0 +1,185 @@
+name: FlatBuffers vector doctest validation
+on:
+  push:
+    branches:
+      - validation/flatbuffers-vector-doctests-20260910
+permissions:
+  contents: read
+concurrency:
+  group: flatbuffers-vector-doctest-validation
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Validate paired vector safety examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          git init flatbuffers
+          cd flatbuffers
+          git remote add origin https://github.com/google/flatbuffers.git
+          git fetch --depth=1 origin 5761d6e67af841d15ee21bc1ce9a78ffa9cf939e
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "5761d6e67af841d15ee21bc1ce9a78ffa9cf939e"
+          test "$(git hash-object rust/flatbuffers/src/vector.rs)" = "17a3a1698ed1c024074ee61adec5089676c8e201"
+          cp rust/flatbuffers/src/vector.rs "$RUNNER_TEMP/vector-before.rs"
+          cat > "$RUNNER_TEMP/vector-doctests.patch" <<'PATCH'
+          diff --git a/rust/flatbuffers/src/vector.rs b/rust/flatbuffers/src/vector.rs
+          --- a/rust/flatbuffers/src/vector.rs
+          +++ b/rust/flatbuffers/src/vector.rs
+          @@ -63,10 +63,28 @@
+               ///
+               /// `buf` contains a valid vector at `loc` consisting of
+               ///
+               /// - UOffsetT element count
+               /// - Consecutive list of `T` elements
+          +    ///
+          +    /// # Examples
+          +    ///
+          +    /// Constructing a vector requires the caller to establish the safety
+          +    /// conditions, even when the buffer happens to contain an empty vector:
+          +    ///
+          +    /// ```compile_fail
+          +    /// let bytes = [0_u8; 4];
+          +    /// let _vector = flatbuffers::Vector::<u8>::new(&bytes, 0);
+          +    /// ```
+          +    ///
+          +    /// ```
+          +    /// let bytes = [0_u8; 4];
+          +    /// // SAFETY: The four bytes encode a zero element count, so no element
+          +    /// // storage is required after the count.
+          +    /// let vector = unsafe { flatbuffers::Vector::<u8>::new(&bytes, 0) };
+          +    /// assert!(vector.is_empty());
+          +    /// ```
+               #[inline(always)]
+               pub unsafe fn new(buf: &'a [u8], loc: usize) -> Self {
+                   Vector(buf, loc, PhantomData)
+               }
+           
+          @@ -153,10 +171,27 @@
+           }
+           
+           /// # Safety
+           ///
+           /// `buf` must contain a value of T at `loc` and have alignment of 1
+          +///
+          +/// # Examples
+          +///
+          +/// The caller must establish the safety conditions before forming a reference:
+          +///
+          +/// ```compile_fail
+          +/// let bytes = [1_u8, 2, 3, 4];
+          +/// let _value: &[u8; 4] = flatbuffers::follow_cast_ref(&bytes, 0);
+          +/// ```
+          +///
+          +/// ```
+          +/// let bytes = [1_u8, 2, 3, 4];
+          +/// // SAFETY: [u8; 4] has alignment one, all its bit patterns are valid, and
+          +/// // the buffer contains all four bytes for the lifetime of the reference.
+          +/// let value: &[u8; 4] = unsafe { flatbuffers::follow_cast_ref(&bytes, 0) };
+          +/// assert_eq!(value, &bytes);
+          +/// ```
+           pub unsafe fn follow_cast_ref<'a, T: Sized + 'a>(buf: &'a [u8], loc: usize) -> &'a T {
+               assert_eq!(align_of::<T>(), 1);
+               let sz = size_of::<T>();
+               let buf = &buf[loc..loc + sz];
+               let ptr = buf.as_ptr() as *const T;
+          @@ -217,10 +252,27 @@
+               ///
+               /// # Safety
+               ///
+               /// buf must contain a contiguous sequence of `items_num` values of `T`
+               ///
+          +    /// # Examples
+          +    ///
+          +    /// A raw-slice iterator also requires an explicit unsafe call:
+          +    ///
+          +    /// ```compile_fail
+          +    /// let bytes = [1_u8, 2, 3];
+          +    /// let _iter = flatbuffers::VectorIter::<u8>::from_slice(&bytes, bytes.len());
+          +    /// ```
+          +    ///
+          +    /// ```
+          +    /// let bytes = [1_u8, 2, 3];
+          +    /// // SAFETY: The slice contains exactly three contiguous u8 values.
+          +    /// let iter = unsafe {
+          +    ///     flatbuffers::VectorIter::<u8>::from_slice(&bytes, bytes.len())
+          +    /// };
+          +    /// assert!(iter.eq(bytes.iter().copied()));
+          +    /// ```
+               #[inline]
+               pub unsafe fn from_slice(buf: &'a [u8], items_num: usize) -> Self {
+                   VectorIter { buf, loc: 0, remaining: items_num, phantom: PhantomData }
+               }
+           }
+          PATCH
+          git apply --check "$RUNNER_TEMP/vector-doctests.patch"
+          git apply "$RUNNER_TEMP/vector-doctests.patch"
+          git diff --check
+          python3 - <<'PYVERIFY'
+          import os
+          from pathlib import Path
+          before = Path(os.environ["RUNNER_TEMP"], "vector-before.rs").read_text()
+          after = Path("rust/flatbuffers/src/vector.rs").read_text()
+          def runtime(text):
+              return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("///"))
+          assert runtime(before) == runtime(after), "Unexpected runtime source change"
+          print("Patch applies and runtime source is unchanged")
+          PYVERIFY
+          CARGO_TARGET_DIR="$RUNNER_TEMP/flatbuffers-std" cargo test --manifest-path rust/flatbuffers/Cargo.toml --doc
+          CARGO_TARGET_DIR="$RUNNER_TEMP/flatbuffers-no_std" cargo test --manifest-path rust/flatbuffers/Cargo.toml --doc --no-default-features
+          cat > "$RUNNER_TEMP/verify-examples.py" <<'PYCHECK'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+          
+          source = Path("rust/flatbuffers/src/vector.rs").read_text()
+          pattern = re.compile(r"^[ \t]*/// ```([^\n]*)\n(.*?)^[ \t]*/// ```[ \t]*$", re.M | re.S)
+          examples = []
+          for match in pattern.finditer(source):
+              code = "\n".join(re.sub(r"^[ \t]*/// ?", "", line) for line in match[2].splitlines())
+              examples.append(("compile_fail" in match[1], code))
+          assert len(examples) == 6, f"Expected six vector examples, got {len(examples)}"
+          assert sum(negative for negative, _ in examples) == 3
+          results = []
+          for mode in ("std", "no_std"):
+              deps = Path(os.environ["RUNNER_TEMP"]) / f"flatbuffers-{mode}" / "debug/deps"
+              libraries = list(deps.glob("libflatbuffers-*.rlib"))
+              assert len(libraries) == 1, f"Expected one library for {mode}: {libraries}"
+              dest = Path(os.environ["RUNNER_TEMP"]) / f"examples-{mode}"
+              dest.mkdir()
+              for index, (negative, code) in enumerate(examples):
+                  src = dest / f"example_{index}.rs"
+                  exe = dest / f"example_{index}"
+                  src.write_text("fn main() {\n" + code + "\n}\n")
+                  command = ["rustc", "--edition=2018", "--error-format=json", str(src),
+                             "--extern", f"flatbuffers={libraries[0]}",
+                             "-L", f"dependency={deps}", "-o", str(exe)]
+                  completed = subprocess.run(command, text=True, capture_output=True, timeout=60)
+                  diagnostics = []
+                  for line in completed.stderr.splitlines():
+                      try:
+                          diagnostics.append(json.loads(line))
+                      except json.JSONDecodeError:
+                          pass
+                  codes = {d["code"]["code"] for d in diagnostics
+                           if d.get("level") == "error" and d.get("code")}
+                  if negative:
+                      assert completed.returncode != 0 and codes == {"E0133"}, completed.stderr
+                  else:
+                      assert completed.returncode == 0, completed.stderr
+                      subprocess.run([str(exe)], check=True, timeout=10)
+                  result = {"mode": mode, "example": index, "kind": "negative" if negative else "positive",
+                            "status": "passed", "error_codes": sorted(codes)}
+                  results.append(result)
+                  print(json.dumps(result), flush=True)
+          print(json.dumps({"explicit_example_checks": len(results), "all_passed": True}), flush=True)
+          PYCHECK
+          python3 "$RUNNER_TEMP/verify-examples.py"
+          printf '## FlatBuffers validation passed\n\nUpstream: `5761d6e67af841d15ee21bc1ce9a78ffa9cf939e`\n\nBoth doctest configurations passed. All 12 explicit checks passed (3 E0133 rejections and 3 valid executions per configuration). No implementation changes.\n' >> "$GITHUB_STEP_SUMMARY"
