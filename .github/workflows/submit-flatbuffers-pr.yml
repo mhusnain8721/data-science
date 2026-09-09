@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf flatbuffers
-          gh repo fork google/flatbuffers --clone --remote
+          gh repo fork google/flatbuffers --clone
           cd flatbuffers
           git checkout -b rust-vector-unsafe-doctests
           curl -fsSL https://raw.githubusercontent.com/mhusnain8721/data-science/contribution/flatbuffers-vector-doctests/contributions/flatbuffers/flatbuffers-rust-unsafe-contract-doctests.patch -o /tmp/flatbuffers.patch
@@ -29,6 +29,7 @@ jobs:
           git config user.email "101082076+mhusnain8721@users.noreply.github.com"
           git add rust/flatbuffers/src/vector.rs
           git commit -m "[Rust] Add paired doctests for vector unsafe-call contracts"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/mhusnain8721/flatbuffers.git"
           git push -u origin rust-vector-unsafe-doctests
           gh pr create \
             --repo google/flatbuffers \
