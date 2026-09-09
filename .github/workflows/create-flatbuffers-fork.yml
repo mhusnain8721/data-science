@@ -1,0 +1,22 @@
+name: Create FlatBuffers fork
+
+on:
+  push:
+    branches:
+      - automation/flatbuffers-fork-attempt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  create-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request fork through GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          gh api --method POST repos/google/flatbuffers/forks > fork-response.json
+          cat fork-response.json
